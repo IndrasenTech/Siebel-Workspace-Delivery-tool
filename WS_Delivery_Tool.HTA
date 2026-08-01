@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<head>
+<!--meta http-equiv="X-UA-Compatible" content="IE=11"-->
+<!-- if the Application gets hang or not opens then run this command on CMD   [ taskkill /IM mshta.exe /F ]  and try again. It will close any background processes-->
+<title>Siebel Workspace Delivery</title>
+<HTA:APPLICATION
+  ID="WSDelivery"
+  APPLICATIONNAME="WSDelivery"
+  BORDER="thin"
+  SCROLL="yes"
+  SINGLEINSTANCE="yes"
+  WINDOWSTATE="normal"
+  CAPTION="yes"
+  SHOWINTASKBAR="yes"
+  WIDTH="1024"
+  HEIGHT="800"
+  RESIZABLE="yes"
+/>
+
+<style>
+html,body{margin:0;padding:0;min-height:100%;font-family:Consolas,monospace,sans-serif;background:#f5f9fc;color:#263238;}
+h3{font-family:Verdana;font-size:42px;font-weight:600;text-align:center;text-transform:uppercase;letter-spacing:1.2px;color:#fff;background:linear-gradient(to right,#42a5f5,#1976d2);padding:16px 32px;margin:0 auto 24px auto;width:90%;border-radius:12px;box-shadow:0 6px 12px rgba(25,118,210,.25);border:1px solid #1e88e5;filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#42a5f5',endColorstr='#1976d2',GradientType=1);}
+h2{background:#e3f2fd;padding:6px 10px;font-size:16px;font-weight:bold;color:#1565c0;border-left:5px solid #42a5f5;margin-top:1px;margin-bottom:5px;display:flex;align-items:center;justify-content:space-between;}
+button{font-size:14px;padding:4px 10px;background:#90caf9;color:#000;border:1px solid #90caf9;border-radius:5px;cursor:pointer;transition:all .2s ease;}
+button:hover{background:#1976d2;color:#fff;box-shadow:0 3px 8px #1976d259;}
+button:disabled{background:#e3e8ed;color:#7d8793;border:1px solid #cfd8dc;cursor:not-allowed;}
+.deliveryActive{background:#1976d2;color:#fff;border:1px solid #1565c0;box-shadow:0 3px 8px rgba(25,118,210,.35);}
+.layoutTable{border-collapse:collapse;width:100%;}
+.layoutTable td{border:none;padding:10px;}
+.selectedBranch{    color:#f11b86;    font-weight:bold;}
+#wsDropdown,#intwsDropdown{font-family:Consolas,monospace;width:550px;font-size:16px;line-height:30px;padding:4px;background:#fff;border:1px solid #64b5f6;border-radius:4px;color:#263238;}
+#wsDropdown:focus,#intwsDropdown:focus{border-color:#1976d2;background:#f8fcff;}
+#objList,#scrollBox{border:1px solid #bbdefb;padding:5px;background:#fff;border-radius:4px;}
+#scrollBox{height:auto;overflow-y:scroll;}
+table.objTable,table.formTable{border-collapse:collapse;width:95%;font-size:12px;}
+table.objTable th,table.objTable td{border:1px solid #c5dff8;padding:4px 6px;text-align:left;}
+table.objTable thead,.headerRow td{background:#e3f2fd;font-weight:bold;color:#1565c0;}
+table.objTable tr:nth-child(even){background:#f8fbff;}
+table.objTable tr:hover{background:#e8f4ff;}
+table.formTable td{border:none;padding:6px 10px;}
+#statusMsg.info{color:#1976d2;font-weight:bold;}
+#statusMsg.success{color:#2e7d32;font-weight:bold;}
+#statusMsg.error{color:#d32f2f;font-weight:bold;}
+#footer{position:fixed;left:0;right:0;bottom:0;padding:4px 4px;background:#fff;color:#7d8793;border-top:1px solid #fff;font-weight:Normal;text-align:center;}
+</style>
+
+<script language="VBScript">
+
+' ===== Global variables ===== '
+Dim dbConnection, snpData, objShell
+Dim logFile, globalWorkspaceStatus, globalWSname
+' ===== DELIVERY STATE ===='
+Dim gExecObj
+Dim gDeliveryRunning
+
+Sub Window_OnLoad
+    window.resizeTo 1024, 750
+    window.moveTo 200, 150
+
+    Set objShell = CreateObject("WScript.Shell")
+    Set dbConnection = CreateObject("ADODB.Connection")
+    Set snpData = CreateObject("ADODB.Recordset")
+	
+	LoadParams()
+
+    ' Log file path
+    ' logFile = "C:\Users\Indrasen\Desktop\Tools\BSS_LOG_HTA.log"
+	logFile = sHTALog
+	'MsgBox "LogFile path--1 is: [" & logFile & "]"
+	
+    WriteLog "==============================================="
+    
+		
+    ' ---- Connect via System DSN
+	' ----    dbConnection.Open "DSN=CRMIP25AD;UID=sadmin;PWD=sadmin;"
+	' ---- WriteLog "Connecting to ODBC: " & sODBC & " with user " & sUsername
+
+	' Attempt connection
+    On Error Resume Next
+    dbConnection.Open "DSN="&sODBC&";UID="&sUsername&";PWD="&sPassword&";"
+    If Err.Number <> 0 Then
+        Document.getElementById("dbStatus").innerHTML = _
+            "Database connection failed: " & Err.Description
+        WriteLog "Database connection failed: " & Err.Description
+        Err.Clear
+        Exit Sub
+    Else
+        Document.getElementById("dbStatus").innerHTML = "Database connection successful."
+        ' WriteLog "Database connection successful."'
+    End If
+    On Error GoTo 0
+	
+    ' Auto-load integration branches
+    FetchWorkspaces "intwsDropdown"
+
+    ' Attach VBScript handlers programmatically
+    Set Document.getElementById("wsDropdown").OnChange = GetRef("HandleWorkspaceChange")
+
+End Sub
+
+Sub LoadParams()
+    Dim fso, ts, line
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.OpenTextFile("C:\Users\ADTeam\Desktop\Desk_Tools\WSDelivery\HTA_Params.vbs", 1)
+	If Err.Number <> 0 Then
+		MsgBox "Could not open HTA_Params.vbs. Error: " & Err.Description
+		Err.Clear
+	End If
+
+    Do Until ts.AtEndOfStream
+        line = ts.ReadLine
+        ExecuteGlobal line   ' executes each Const line into global scope
+    Loop
+    ts.Close
+End Sub
+
+Sub WriteLog(msg)
+    On Error Resume Next
+    Dim fso, f
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set f = fso.OpenTextFile(logFile, 8, True)
+    If Err.Number = 0 Then
+		If msg="===============================================" Then
+			f.WriteLine msg & " - HTA started" 
+		Else
+			f.WriteLine Now & " - " & msg
+		End If
+        f.Close
+    Else
+        MsgBox "Could not open log file: " & logFile & vbCrLf & "Error: " & Err.Description
+    End If
+    Set f = Nothing
+    Set fso = Nothing
+    On Error GoTo 0
+End Sub
+
+Sub XWriteLog(msg)
+    On Error Resume Next
+    Dim fso, f
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set f = fso.OpenTextFile(logFile, 8, True) ' 8 = append
+    If Err.Number = 0 Then
+        f.WriteLine Now & " - " & msg
+        f.Close
+    End If
+    Set f = Nothing
+    Set fso = Nothing
+    On Error GoTo 0
+End Sub
+
+' Combined handler for workspace dropdown change
+Sub HandleWorkspaceChange()
+    ShowWorkspaceDetails
+    LockDropdown "wsDropdown"
+End Sub
+
+Sub LockDropdown(dropdownId)
+    Dim dropdown
+    Set dropdown = Document.getElementById(dropdownId)
+    If dropdown.Value <> "" Then
+        dropdown.disabled = True
+        WriteLog "Dropdown " & dropdownId & " locked after selection: " & dropdown.Value
+    End If
+End Sub
+Sub HighlightSelectedBranch()
+    Dim radios, i, lbl
+    Set radios = Document.getElementsByName("intBranch")
+
+    For i = 0 To radios.Length-1
+        ' each radio's parent is the <label>
+        Set lbl = radios.Item(i).parentNode
+        If radios.Item(i).Checked Then
+            lbl.className = "selectedBranch"
+            WriteLog "Branch selected: " & radios.Item(i).Value
+        Else
+            lbl.className = ""
+        End If
+    Next
+End Sub
+Sub FetchWorkspaces(targetId)
+    Dim sSQL
+
+    ' Close recordset before reuse
+    If snpData.State = 1 Then snpData.Close
+
+    Select Case targetId
+        Case "intwsContainer"
+            sSQL = "SELECT NAME FROM siebel.S_WORKSPACE " & _
+                   "WHERE ((PAR_WS_ID = '1-2R76Z0Y0' and (NAME like 'int_release_bss%' OR NAME = '"& sParentWSname &"')) OR  NAME like 'int_release_stc_adhoc_%') ORDER BY Created"
+            snpData.Open sSQL, dbConnection
+            PopulateIntegrationBranches snpData
+
+        Case "wsDropdown"
+            Dim parWS, inWS
+            parWS = GetSelectedBranch()
+            If parWS = "" Then parWS = Document.getElementById("wsInput").Value
+
+            If parWS = "" Or parWS = "Enter workspace name" Then
+                WriteLog "No branch/workspace provided."
+                Exit Sub
+			Else
+				globalWSname = parWS
+            End If
+
+            
+            sSQL = "SELECT w.NAME FROM siebel.S_WORKSPACE w, siebel.S_WORKSPACE p" & _
+                   " WHERE w.PAR_WS_ID=p.ROW_ID AND (p.NAME='" & parWS & "' OR w.NAME='" & parWS & "')" & _
+                   " AND w.STATUS_CD='Submitted for Delivery' ORDER BY w.LAST_UPD Desc"
+            snpData.Open sSQL, dbConnection
+            PopulateWorkspaceDropdown snpData
+
+        Case Else
+            Exit Sub
+    End Select
+	'WriteLog "targetId = "& targetId & "; sSQL >>> " & vbCrLf & sSQL
+    If snpData.State = 1 Then snpData.Close
+End Sub
+
+Sub PopulateIntegrationBranches(rs)
+    Dim container, branchName, radioHtml
+    Set container = Document.getElementById("intwsContainer")
+    container.innerHTML = ""
+
+    If rs.EOF Then
+        container.innerHTML = "No branches found."
+        WriteLog "No integration branches found."
+        Exit Sub
+    End If
+
+    Do While Not rs.EOF
+        branchName = CStr(rs.Fields(0).Value)
+        ' radioHtml = "<label><input type='radio' name='intBranch' value='" & branchName & "'>" & branchName & "</label><br>" '
+        radioHtml = "<label class='branchItem'><input type='radio' name='intBranch' value='" & branchName & "'><span>" & branchName & "</span></label><br>"
+        container.innerHTML = container.innerHTML & radioHtml
+        rs.MoveNext
+    Loop
+    WriteLog "Integration branch radio buttons populated."
+
+    ' Attach handler
+    Dim radios, i
+    Set radios = Document.getElementsByName("intBranch")
+    For i = 0 To radios.Length-1
+        Set radios.Item(i).OnClick = GetRef("HighlightSelectedBranch")
+    Next
+End Sub
+
+Sub PopulateWorkspaceDropdown(rs)
+    Dim dropdown, opt, inputWSFound, intWS, cnt, updY
+    Set dropdown = Document.getElementById("wsDropdown")
+	
+	intWS = GetSelectedBranch()
+
+	'WriteLog "Manual record count = " & cnt
+	'WriteLog "Developer workspace dropdown populated. intWS="& intWS & "; cnt = "&cnt&";"
+	
+    ' Reset UI
+    ShowDropdown
+    Document.getElementById("ShowModifiedObj").style.display = "none"
+    Document.getElementById("wsDetails").style.display = "none"
+
+    ' Clear old options (keep placeholder)
+    Do While dropdown.options.length > 1
+        dropdown.remove 1
+    Loop
+
+    If rs.EOF Then
+        Set opt = Document.createElement("option")
+        opt.innerText = "No workspaces found"
+        opt.Value = ""
+        dropdown.appendChild opt
+        WriteLog "No developer workspaces found."
+		Document.getElementById("wsDropdown").Value = ""
+        dropdown.FireEvent "onchange"   ' trigger handler
+        Exit Sub
+    End If
+	
+	cnt = 0
+	Do Until snpData.EOF
+		cnt = cnt + 1
+		snpData.MoveNext
+	Loop
+	snpData.MoveFirst   ' reset to first record
+    Do While Not rs.EOF
+        Set opt = Document.createElement("option")
+        opt.innerText = CStr(rs.Fields(0).Value)
+        opt.Value     = CStr(rs.Fields(0).Value)
+        dropdown.appendChild opt
+		If cnt = 1 Then 
+			updY = "Y"
+			globalWSname = CStr(rs.Fields(0).Value)
+		End If
+        rs.MoveNext
+    Loop
+    WriteLog "Developer workspace dropdown populated. " & globalWSname & "; Cnt="&cnt&" ; updY="& updY
+
+    ' Reset object list/actions
+    Document.getElementById("objList").style.display = "none"
+    Document.getElementById("actions").style.display = "none"
+    dropdown.disabled = False
+	
+	' Auto select if match
+    If updY = "Y" Then
+        Document.getElementById("wsDropdown").Value = globalWSname
+        dropdown.FireEvent "onchange"   ' trigger handler
+    End If
+	
+    ' Clear modified objects table
+    Dim tblBody
+    Set tblBody = Document.getElementById("objBody")
+    Do While tblBody.rows.length > 0
+        tblBody.deleteRow 0
+    Loop
+    WriteLog "Modified Objects List cleared / refresh."
+End Sub
+
+Function GetSelectedBranch()
+    Dim radios, i
+    Set radios = Document.getElementsByName("intBranch")
+    For i = 0 To radios.Length-1
+        If radios.Item(i).Checked Then
+            GetSelectedBranch = radios.Item(i).Value
+            Exit Function
+        End If
+    Next
+    GetSelectedBranch = ""
+End Function
+
+
+Sub ShowWorkspaceDetails()
+    Dim wsName, sSQL, detailsDiv, msg
+
+    wsName = Document.getElementById("wsDropdown").Value
+  
+	
+	Set detailsDiv = Document.getElementById("wsDetails")
+	
+	Document.getElementById("wsDetails").style.display = "block"  		' block/none
+
+    If wsName = "" Or wsName = "-- Select Workspace --" Then
+        detailsDiv.innerHTML = "Workspace not selected/found."
+        WriteLog "Workspace details requested but none selected."
+        Exit Sub
+    End If
+
+    sSQL = "SELECT w.NAME AS WS_NAME, p.NAME AS PARENT_WS, w.STATUS_CD " & _
+           "FROM siebel.S_WORKSPACE w " & _
+           "LEFT JOIN siebel.S_WORKSPACE p ON w.PAR_WS_ID = p.ROW_ID " & _
+           "WHERE w.NAME = '" & wsName & "'"
+
+    If snpData.State = 1 Then snpData.Close
+    snpData.Open sSQL, dbConnection
+
+    If snpData.EOF Then
+        msg = "Workspace '" & wsName & "' not found."
+        WriteLog "Workspace not found: " & wsName
+    Else
+        msg = "Selected Workspace: <b>" & snpData("WS_NAME") & "</b><br>" & _
+              "Parent Workspace: <b>" & CStr(snpData("PARENT_WS")) & "</b><br>" & _
+              "Status: <b>" & CStr(snpData("STATUS_CD")) & "</b>"
+        WriteLog "Workspace details displayed for: " & wsName
+		Document.getElementById("ShowModifiedObj").style.display = "block"  ' block/none
+		
+		' assign WS status to global variable
+		globalWorkspaceStatus = CStr(snpData("STATUS_CD"))
+		globalWSname  = CStr(snpData("WS_NAME"))
+    End If
+
+    detailsDiv.innerHTML = msg
+	
+	' if buttons are visible then make it readonly
+	Dim btns, btn, i
+	If globalWorkspaceStatus <> "Submitted for Delivery" Then
+		Set btns = Document.getElementsByTagName("button")
+		For i = 0 To btns.Length - 1
+			Set btn = btns.Item(i)
+			If btn.id = "continueBtn" Or btn.id = "cancelBtn" Or btn.id = "FetchIntWSBtn" Then
+				btn.disabled = True
+			End If
+		Next
+	End If
+	If globalWorkspaceStatus = "Submitted for Delivery" Then
+		Set btns = Document.getElementsByTagName("button")
+		For i = 0 To btns.Length - 1
+			Set btn = btns.Item(i)
+			If btn.id = "continueBtn" Or btn.id = "cancelBtn" Or btn.id = "FetchIntWSBtn" Then
+				btn.disabled = False
+			End If
+		Next
+	End If
+	
+    If snpData.State = 1 Then snpData.Close
+End Sub
+
+
+Sub ShowObjects()
+
+    Dim sSQLPre, tblBody, row, wsName
+	wsName = Document.getElementById("wsDropdown").Value
+	Document.getElementById("objList").style.display = "block"
+	
+    sSQLPre = "SELECT v.VERSION_NUM, o.OPERATION_CD, o.OBJ_TYPE, o.OBJ_NAME " & _
+              "FROM siebel.S_WORKSPACE w, siebel.S_WS_VERSION v, siebel.S_RTC_MOD_OBJ o " & _
+              "WHERE w.ROW_ID = v.WS_ID " & _
+              "AND v.ROW_ID = o.WS_VER_ID " & _
+              "AND w.name = '" & wsName & "' "
+
+    WriteLog "globalWorkspaceStatus = " & globalWSname & " >> " & globalWorkspaceStatus
+	' WriteLog "Workspace details displayed for: " & wsName
+    ' Ensure recordset is closed before reuse
+    If snpData.State = 1 Then snpData.Close
+    snpData.Open sSQLPre, dbConnection
+	
+	
+    Set tblBody = Document.getElementById("objBody")
+	
+    ' Clear any existing rows
+    Do While tblBody.rows.length > 0
+        tblBody.deleteRow 0
+    Loop
+	
+	 ' Add header row
+    Set row = tblBody.insertRow()
+    row.insertCell().innerText = "WS#"
+    row.insertCell().innerText = "CHANGE"
+    row.insertCell().innerText = "OBJ_TYPE"
+    row.insertCell().innerText = "OBJ_NAME"
+	row.className = "headerRow"
+
+
+    ' Add data rows
+    If snpData.EOF Then
+        Set row = tblBody.insertRow()
+        row.insertCell().innerText = "No modified objects found."
+        row.cells(0).colSpan = 4
+        WriteLog "No modified objects for workspace: " & wsName
+    Else
+        Do While Not snpData.EOF
+            Dim verNum, opCd, objType, objName
+
+            If IsNull(snpData("VERSION_NUM")) Then verNum = "" Else verNum = CStr(snpData("VERSION_NUM"))
+            If IsNull(snpData("OPERATION_CD")) Then opCd = "" Else opCd = CStr(snpData("OPERATION_CD"))
+            If IsNull(snpData("OBJ_TYPE")) Then objType = "" Else objType = CStr(snpData("OBJ_TYPE"))
+            If IsNull(snpData("OBJ_NAME")) Then objName = "" Else objName = CStr(snpData("OBJ_NAME"))
+
+            Set row = tblBody.insertRow()
+            row.insertCell().innerText = verNum
+            row.insertCell().innerText = opCd
+            row.insertCell().innerText = objType
+            row.insertCell().innerText = objName
+
+            snpData.MoveNext
+        Loop
+    End If
+
+    If snpData.State = 1 Then snpData.Close
+	
+	Dim rowCount
+	rowCount = tblBody.rows.length
+
+	If rowCount <= 8 Then
+		Document.getElementById("scrollBox").style.height = (rowCount * 28) & "px"
+	Else
+		Document.getElementById("scrollBox").style.height = (8 * 28) & "px"
+	End If
+	If globalWorkspaceStatus = "Submitted for Delivery" Then 
+		Document.getElementById("actions").style.display = "block"
+	End If
+    WriteLog "Objects list displayed for workspace: " & wsName
+End Sub
+
+Sub ContinueDelivery(sComment)
+    Dim cmd, wsName, rc, comnt
+
+    wsName = Document.getElementById("wsDropdown").Value
+	comnt  = Document.getElementById("wsComment").Value
+	If comnt = "Provide your Name" Then
+		comnt = sComment
+	End If
+	
+    // Build the full command string 
+    cmd = sTools & " /u " & sUsername & " /p " & sPassword & _
+          " /Deliverworkspace " & wsName & " """ & sWSComment & comnt & """"
+
+    ' Log it '
+    ' WriteLog "Running command: " & cmd '
+    WriteLog "Workspace_delivery Started : " & wsName
+	Document.getElementById("deliveryStatus").innerHTML = "Workspace Delivery started .... please wait until it finish"
+	Document.getElementById("deliveryStatus").style.color = "#bb4af7"
+	
+	' Freez UI for Double clicks
+	FreezUI "Disable", "continueBtn"
+	
+    ' Run it and capture exit code ------ ' 1 = normal window, True = wait until finished
+    rc = objShell.Run(cmd, 1, True)
+
+    ' Check result
+    If rc = 0 Then
+        
+        WriteLog "Workspace_delivery succeeded : " & wsName
+        MsgBox "Workspace delivery succeeded for " & wsName, vbInformation, "Delivery Status"
+        Document.getElementById("deliveryStatus").innerHTML = "Delivery succeeded: " & wsName
+        Document.getElementById("deliveryStatus").style.color = "blue"
+    Else
+        MsgBox "Workspace delivery failed for " & wsName & vbCrLf & "Exit code: " & rc, vbCritical, "Delivery Status"
+        WriteLog "Delivery failed for workspace: " & wsName & " Exit code: " & rc
+        Document.getElementById("deliveryStatus").innerHTML = "Delivery failed for workspace: " & wsName & " (Exit code " & rc & ")"
+        Document.getElementById("deliveryStatus").style.color = "red"
+    End If
+	
+	' Un-Freez UI after Run task complete
+	FreezUI "Enable", "continueBtn"
+	ShowWorkspaceDetails()
+
+	
+End Sub
+
+Sub CancelDelivery
+	' Reset UI  ' inline / none / block
+    ShowInput
+    Document.getElementById("wsDetails").style.display = "none"
+    Document.getElementById("ShowModifiedObj").style.display = "none"
+	Document.getElementById("actions").style.display = "none"	
+		
+End Sub
+
+Sub SampleDeliverWorkspace(sWS, sComment)
+    Dim cmd, execObj, line
+
+    ' Build the full command string
+    cmd = sTools & " /u " & sUsername & " /p " & sPassword & _
+          " /Deliverworkspace " & sWS & " """ & sWSComment & sComment & """"
+
+    WriteLog "Running command: " & cmd
+
+    ' Launch with Exec (non-blocking, but we can wait by reading streams)
+    Set execObj = objShell.Exec(cmd)
+
+    ' Capture stdout
+    Do Until execObj.StdOut.AtEndOfStream
+        line = execObj.StdOut.ReadLine
+        WriteLog "OUT: " & line
+    Loop
+
+    ' Capture stderr
+    Do Until execObj.StdErr.AtEndOfStream
+        line = execObj.StdErr.ReadLine
+        WriteLog "ERR: " & line
+    Loop
+
+    ' Wait until finished
+    ' Do While execObj.Status = 0
+    '    WScript.Sleep 100   ' small pause
+    ' Loop
+
+    ' Check exit code
+    If execObj.ExitCode <> 0 Then
+        WriteLog "Delivery failed. Exit code: " & execObj.ExitCode
+        MsgBox "Delivery failed with exit code " & execObj.ExitCode, vbCritical
+    Else
+        WriteLog "Delivery succeeded."
+        MsgBox "Delivery succeeded.", vbInformation
+    End If
+
+    Set execObj = Nothing
+End Sub
+
+Sub ClearHint
+    Dim tb
+    Set tb = Document.getElementById("wsComment")
+    If tb.Value = "Provide your Name" Then
+        tb.Value = ""
+        tb.style.color = "black"
+    End If
+	Set tb = Document.getElementById("wsInput")
+    If tb.Value = "Enter workspace name" Then
+        tb.Value = ""
+        tb.style.color = "black"
+    End If
+End Sub
+
+Sub RestoreHint
+    Dim tb
+    Set tb = Document.getElementById("wsComment")
+    If Trim(tb.Value) = "" Then
+        tb.Value = "Provide your Name"
+        tb.style.color = "gray"
+    End If
+	Set tb = Document.getElementById("wsInput")
+    If Trim(tb.Value) = "" Then
+        tb.Value = "Enter workspace name"
+        tb.style.color = "gray"
+    End If
+End Sub
+Sub ShowDropdown
+    Document.getElementById("wsDropdown").style.display = "inline"
+    Document.getElementById("wsInput").style.display = "none"
+End Sub
+
+Sub ShowInput
+    Document.getElementById("wsDropdown").style.display = "none"
+    Document.getElementById("wsInput").style.display = "inline"
+End Sub
+
+Sub DisableUIOnDelivery(clickedBtnId)
+    Dim btns, inputs, i, el
+
+    ' Highlight and disable the clicked button
+    Set el = Document.getElementById(clickedBtnId)
+    el.disabled = True
+    el.style.backgroundColor = "#1b6af2"   ' Color blue highlight
+    el.style.color = "white"
+
+    ' Disable all other buttons
+    Set btns = Document.getElementsByTagName("button")
+    For i = 0 To btns.Length-1
+        btns.Item(i).disabled = True
+    Next
+
+    ' Disable all input boxes
+    Set inputs = Document.getElementsByTagName("input")
+    For i = 0 To inputs.Length-1
+        inputs.Item(i).disabled = True
+    Next
+
+    WriteLog "UI disabled after starting delivery."
+End Sub
+
+Sub FreezeUIimproved(sAction, activeBtnId)
+    Dim btns, inputs, i, btn, isFreeze
+	If sAction = "Enable" Then
+		isFreeze = False
+	ElseIf  sAction = "Disable" Then
+		isFreeze = True
+	Else
+		isFreeze = ""
+	End If
+    Set btns = Document.getElementsByTagName("button")
+    For i = 0 To btns.Length - 1
+        Set btn = btns.Item(i)
+        If isFreeze = True Then
+            btn.disabled = True
+            ' Highlight only active button
+            If btn.id = activeBtnId Then
+                btn.className = btn.className & " deliveryActive"
+            End If
+        Else
+            btn.disabled = False
+            btn.className = Replace(btn.className, " deliveryActive", "")
+        End If
+    Next
+    Set inputs = Document.getElementsByTagName("input")
+    For i = 0 To inputs.Length - 1
+        inputs.Item(i).disabled = isFreeze
+    Next
+    If isFreeze Then
+        WriteLog "INFO", "UI frozen."
+    Else
+        WriteLog "INFO", "UI restored."
+    End If
+End Sub
+
+
+Sub FreezUI(sAction, clickBtnId)
+    Dim btns, inputs, i
+
+    Set btns = Document.getElementsByTagName("button")
+    For i = 0 To btns.Length-1
+        If sAction = "Enable" Then
+            btns.Item(i).disabled = False
+            btns.Item(i).style.backgroundColor = ""
+            btns.Item(i).style.color = ""
+        ElseIf sAction = "Disable" Then
+            btns.Item(i).disabled = True
+            ' highlight the clicked button differently
+            If btns.Item(i).id = clickBtnId Then
+                btns.Item(i).style.backgroundColor = "#bb4af7"  ' blue highlight
+                btns.Item(i).style.color = "white"
+            End If
+        End If
+    Next
+
+    Set inputs = Document.getElementsByTagName("input")
+    For i = 0 To inputs.Length-1
+        If sAction = "Enable" Then
+            inputs.Item(i).disabled = False
+            inputs.Item(i).style.backgroundColor = ""
+            inputs.Item(i).style.color = ""
+        ElseIf sAction = "Disable" Then
+            inputs.Item(i).disabled = True
+        End If
+    Next
+
+    // WriteLog "UI " & sAction & "d after delivery."
+End Sub
+
+</script>
+
+</head>
+<body>
+<div style="text-align:right; margin-top:5px; margin-bottom:5px;">
+
+  <button id="RefreshBtn" onclick="window.location.reload()" class="slimBtn">
+   Refresh
+  </button>
+</div>
+
+  <h3 id="deliveryTitle">Siebel Workspace Delivery</h3>
+
+  <div id="dbStatus" style="color:powderblue; font-weight:bold;" ></div>
+
+  <table class="layoutTable" role="presentation">
+  <tr>
+    <!-- Column 1: Integration Branch -->
+    <td style="vertical-align:top; padding:10px;">
+      <h2>
+        Select Integration Branch <br>
+        <button id="FetchIntWSBtn" onclick="FetchWorkspaces('intwsContainer')" style="margin-left:10px;">
+          Load Branches
+        </button>
+      </h2>
+      <div id="intwsContainer">
+        <!-- Radio buttons for integration branches will be inserted here -->
+      </div>
+    </td>
+
+    <!-- Column 2: Developer Workspace -->
+    <td style="vertical-align:top; padding:10px;">
+      <h2>
+        Select Developer Workspace :  dev_indrag_20260107_hotfix_rekey<br>
+		<span>
+        <button id="FetchDevWSBtn" onclick="FetchWorkspaces('wsDropdown')" style="margin-left:10px;">Load Workspaces</button>
+		</span>
+		<!--span>
+        <button onclick="FetchWorkspaces('wsInput')" style="margin-left:10px;">Direct Workspace</button>
+		</span-->
+      </h2>
+      <div>
+		<span>
+	      <!-- Dropdown -->
+		  <select id="wsDropdown" style="display:none;">
+			<option value="">-- Select Workspace --</option>
+		  </select>
+		  <!-- Input box -->
+		  <input type="text" id="wsInput" style="display:inline; width:450px; height:25px; color:gray;"
+				 value="Enter workspace name" onfocus="ClearHint" onblur="RestoreHint">
+		</span>
+      </div>
+      <div id="wsDetails" style="margin-top:10px; font-family:Consolas; font-size:12px; color:#333;">
+        <!-- Workspace details will appear here -->
+      </div>
+    </td>
+  </tr>
+</table>
+
+  <!-- Display selected workspace details -->
+  <div id="wsDetailsDummy" style="margin-top:10px; font-family:Consolas; font-size:12px; color:#333;">
+    <!-- Workspace details will appear here -->
+  </div>
+
+  <!-- Show modified objects -->
+  <div id="ShowModifiedObj" style="display:none;">
+    <!--input type="button" class="secondaryBtn" value="Show Modified Objects" onclick="ShowObjects()"-->
+	<button id="ShowModifiedObjBtn" style="margin-left:10px;" onclick="ShowObjects()">Show Modified Objects</button>
+    <div id="statusMsg" class="info" style="margin-top:5px;"></div>
+  </div>
+
+
+  <!-- Modified objects list -->
+  <div id="objList" style="display:none;">
+    <div id="scrollBox">
+      <table id="objTable" class="objTable">
+        <thead id="objHead"></thead>
+        <tbody id="objBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Action buttons -->
+  <div id="actions" style="display:none;">
+	<!-- Optional comment input >
+	<input type="text" id="wsComment" placeholder="Enter delivery comment" style="margin-top:10px; width:300px;"> -->
+	<input type="text" id="wsComment" value="Provide your Name"
+       style="margin-top:10px; width:300px; color:gray;"
+       onfocus="ClearHint" onblur="RestoreHint">
+    <button id="continueBtn" style="margin-left:10px;" onclick="ContinueDelivery('HTA')">Continue Delivery</button>
+	<button id="cancelBtn" style="margin-left:10px;" onclick="CancelDelivery()">Cancel Delivery</button>
+	<div id="deliveryStatus" style="padding:4px 8px; font-size:12px; border:1px solid #ccc; border-radius:4px; min-width:200px;">
+      Waiting...
+    </div>
+  </div>
+  <div id="footer" style="text-align:right; padding:4px 5px; font-size:10px; border:1px">Crafted with LOVE on ADTEAM, By : Indrasen Gaddam</div>
+</body>
+</html>
