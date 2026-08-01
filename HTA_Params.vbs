@@ -1,0 +1,10 @@
+Const sODBC = "CRMODBC_DSN_NAME"		' ODBC32 name should be using OraClient. When using "Siebel Oracle" driver there'll be an annoying copyright message.
+Const sUsername = "SADMIN"		      ' DB user name
+Const sPassword = "XXXXXX"		    	' DB password
+Const sTools = """C:\Siebel\IP25.3\BIN\siebdev.exe"" /c ""C:\Siebel\IP25.3\bin\enu\tools.cfg"" /d ServerDataSrc"	        'Siebel tools path along with some params, be careful with quote escaping
+Const sLog = "C:\Siebel\IP25.3\LOG"	' Logs directory if you want it to be opened delivery failed
+Const sDefWS = "dev_*"		          ' Default workspace name prefix to ease typing
+Const sWSComment = "VB Script Auto-Delivery by - "		                      ' Delivery comment - usually your name/username if using a common system user for delivery
+Const sHTALog = "C:\Users\ADTeam\Desktop\Desk_Tools\WSDelivery\HTALOG.log"	' C:\Users\Indrasen\Desktop\Tools\WS_DLVRY\HTALOG.log
+const sParentWSname = "int_release_bss_fy26"
+const sParamFilePath = ""
